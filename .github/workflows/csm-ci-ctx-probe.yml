@@ -1,0 +1,6 @@
+name: csm-ci-ctx-probe
+on: workflow_dispatch
+permissions: {}
+jobs:
+  call:
+    uses: civitaspo/csm-ci-actions/.github/workflows/ctx-probe.yml@b9576bd9cfd14afffff8c4b97232b9273146f5ec
