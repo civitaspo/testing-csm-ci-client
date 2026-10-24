@@ -15,4 +15,5 @@ jobs:
       - name: installed repositories
         env:
           CLIENT_TOKEN: ${{ steps.client.outputs.token }}
-        run: echo "client: $(GH_TOKEN=$CLIENT_TOKEN gh api /installation/repositories --jq '[.repositories[].name] | sort | join(",")')"
+        run: |
+          echo "client: $(GH_TOKEN=$CLIENT_TOKEN gh api /installation/repositories --jq '[.repositories[].name] | sort | join(",")')"
