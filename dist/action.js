@@ -1,1 +1,3 @@
-stale release build 1.0.1792886337166
+export function releaseFixture() {
+  return "testing csm-ci release";
+}
