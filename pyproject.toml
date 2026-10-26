@@ -1,6 +1,6 @@
 [project]
 name = "release-fixture"
-version = "1.0.0"
+version = "1.0.1792972947496"
 
 [tool.fixture]
 version = "9.0.0"
