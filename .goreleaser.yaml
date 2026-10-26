@@ -1,18 +1,16 @@
 version: 2
-project_name: terraform-provider-csm-ci-test
+project_name: testing-csm-ci-client
 builds:
   - main: ./cmd/release-fixture
     env: [CGO_ENABLED=0]
-    goos: [freebsd, windows, linux, darwin]
-    goarch: [amd64, "386", arm, arm64]
-    goarm: ["6"]
-    ignore:
-      - { goos: darwin, goarch: "386" }
-      - { goos: darwin, goarch: arm }
-    binary: "{{ .ProjectName }}_v{{ .Version }}"
+    goos: [linux]
+    goarch: [amd64]
     flags: [-trimpath]
     ldflags: [-s -w]
     mod_timestamp: "{{ .CommitTimestamp }}"
 archives:
-  - formats: [zip]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - formats: [tar.gz]
+    builds_info:
+      group: root
+      owner: root
+      mtime: 2008-01-02T15:04:05Z
