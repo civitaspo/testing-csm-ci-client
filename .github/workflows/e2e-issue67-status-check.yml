@@ -1,0 +1,208 @@
+name: Issue 67 funding fixture CI
+on:
+  push:
+    branches:
+      - 'e2e-issue67-status-check-bootstrap-*'
+      - 'csm-ci/repo-settings'
+      - 'e2e-issue67-funding-restore-*'
+permissions: {}
+concurrency:
+  group: issue67-fixture-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  status-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Validate exact signed fixture head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'VALIDATOR_PY'
+          """Trusted workflow code. Never imports, checks out, or executes proposed files."""
+          import base64
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          
+          REPOSITORY = 'civitaspo/testing-csm-ci-client'
+          WORKFLOW = '.github/workflows/e2e-issue67-status-check.yml'
+          MANIFEST = 'e2e/issue67-status-check-baseline.json'
+          FUNDING = '.github/FUNDING.yml'
+          SERVER_ID = 347400474
+          OPERATOR_ID = 4525500
+          SHA = re.compile(r'[a-f0-9]{40}\Z')
+          GENERATED = {b'github: ["civitaspo"]\n', b'github: ["civitaspo", "civitaspo-bot"]\n'}
+          
+          
+          def require(value, message):
+              if not value:
+                  raise ValueError(message)
+          
+          
+          def blob_bytes(blob):
+              if blob is None:
+                  return None
+              require(isinstance(blob, dict) and set(blob) == {'mode', 'blob', 'base64'}, 'malformed blob')
+              require(blob['mode'] == '100644' and isinstance(blob['blob'], str) and SHA.fullmatch(blob['blob']), 'not a regular non-executable blob')
+              require(isinstance(blob['base64'], str) and len(blob['base64']) <= 180_000, 'blob too large')
+              raw = base64.b64decode(blob['base64'], validate=True)
+              require(len(raw) <= 128_000, 'blob exceeds test-only bound')
+              raw.decode('utf-8', errors='strict')
+              digest = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+              require(digest == blob['blob'], 'Git blob digest mismatch')
+              return raw
+          
+          
+          def validate(context):
+              require(context['repository'] == REPOSITORY, 'wrong repository')
+              require(context['event'] == 'push', 'wrong event')
+              require(SHA.fullmatch(context['head']) and SHA.fullmatch(context['base']), 'invalid pinned SHA')
+              require(context['head'] != context['base'], 'empty change')
+              commits = context['commits']
+              require(len(commits) == 1 and commits[0]['sha'] == context['head'], 'need exactly one current commit')
+              commit = commits[0]
+              require(commit['verified'] is True and commit['reason'] == 'valid', 'invalid signature')
+              require(context['author'] == commit['author'], 'push actor differs from signed commit author')
+              require(commit['parent'] == context['base'], 'commit not based on pinned current default')
+              files = context['files']
+              require(1 <= len(files) <= 2, 'unexpected file count')
+              names = [f['filename'] for f in files]
+              require(len(set(names)) == len(names), 'duplicate file')
+              require(all(f['status'] in ('added', 'modified', 'removed') and not f.get('previous_filename') for f in files), 'rename or unsupported change')
+              head_blobs, base_blobs = context['headBlobs'], context['baseBlobs']
+              # Validating every supplied object makes malformed or mode-changed evidence fail closed.
+              for blobs in (head_blobs, base_blobs):
+                  require(set(blobs) == {WORKFLOW, MANIFEST, FUNDING}, 'incomplete blob evidence')
+                  for blob in blobs.values():
+                      blob_bytes(blob)
+              is_bootstrap = context['branch'].startswith('e2e-issue67-status-check-bootstrap-')
+              trusted = head_blobs if is_bootstrap else base_blobs
+              manifest_raw = blob_bytes(trusted[MANIFEST])
+              workflow_raw = blob_bytes(trusted[WORKFLOW])
+              require(manifest_raw is not None and workflow_raw is not None, 'missing trusted validator files')
+              manifest = json.loads(manifest_raw)
+              require(set(manifest) == {'schema', 'repository', 'session', 'originalDefault', 'funding', 'workflowSha256'}, 'invalid manifest fields')
+              require(manifest['schema'] == 1 and manifest['repository'] == REPOSITORY, 'invalid manifest identity')
+              require(isinstance(manifest['session'], str) and re.fullmatch(r'[a-f0-9]{12}', manifest['session']), 'invalid session')
+              require(SHA.fullmatch(manifest['originalDefault']), 'invalid original default')
+              original = blob_bytes(manifest['funding'])
+              require(hashlib.sha256(workflow_raw).hexdigest() == manifest['workflowSha256'], 'validator workflow digest mismatch')
+              session = manifest['session']
+              branch = context['branch']
+              if is_bootstrap:
+                  require(branch == f'e2e-issue67-status-check-bootstrap-{session}', 'wrong bootstrap branch')
+                  require(commit['author'] == OPERATOR_ID and context['author'] == OPERATOR_ID, 'untrusted bootstrap actor')
+                  require(context['base'] == manifest['originalDefault'], 'bootstrap default moved')
+                  require(set(names) == {WORKFLOW, MANIFEST} and all(f['status'] == 'added' for f in files), 'bootstrap must add only two validator files')
+                  require(base_blobs[WORKFLOW] is None and base_blobs[MANIFEST] is None, 'bootstrap destination already owned')
+                  require(blob_bytes(head_blobs[FUNDING]) == original and blob_bytes(base_blobs[FUNDING]) == original, 'bootstrap changed funding')
+                  return 'bootstrap'
+              if branch == 'csm-ci/repo-settings':
+                  require(commit['author'] == SERVER_ID and context['author'] == SERVER_ID, 'managed PR is not Server owned')
+                  require(names == [FUNDING] and files[0]['status'] in ('added', 'modified'), 'managed PR changes unexpected paths')
+                  require(blob_bytes(head_blobs[FUNDING]) in GENERATED, 'unexpected generated recipients or funding bytes')
+                  require(head_blobs[WORKFLOW] == base_blobs[WORKFLOW] and head_blobs[MANIFEST] == base_blobs[MANIFEST], 'managed PR changes validator')
+                  return 'funding'
+              require(commit['author'] == OPERATOR_ID and context['author'] == OPERATOR_ID, 'operator-owned stage required')
+              if re.fullmatch(r'e2e-issue67-funding-restore-[a-f0-9]{12}', branch):
+                  require(names == [FUNDING], 'restoration changes unexpected paths')
+                  require(blob_bytes(head_blobs[FUNDING]) == original, 'restoration differs from immutable original funding')
+                  require(head_blobs[WORKFLOW] == base_blobs[WORKFLOW] and head_blobs[MANIFEST] == base_blobs[MANIFEST], 'restoration changes validator')
+                  return 'restoration'
+              raise ValueError('unrecognized branch; validator removal requires separate reviewed work')
+          
+          
+          class API:
+              def __init__(self):
+                  self.deadline = time.monotonic() + 230
+                  self.token = os.environ['GH_TOKEN']
+          
+              def request(self, path):
+                  require(path.startswith('/repos/' + REPOSITORY + '/'), 'endpoint escaped testing repository')
+                  for attempt in range(3):
+                      remaining = self.deadline - time.monotonic()
+                      require(remaining > 0, 'validator deadline exceeded')
+                      request = urllib.request.Request('https://api.github.com' + path, headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+                      try:
+                          with urllib.request.urlopen(request, timeout=min(15, remaining)) as response:
+                              return json.load(response)
+                      except urllib.error.HTTPError as error:
+                          if error.code in (429, 500, 502, 503, 504) and attempt < 2:
+                              time.sleep(1)
+                              continue
+                          raise ValueError(f'GitHub read failed ({error.code})') from None
+                  raise ValueError('read retries exhausted')
+          
+              def read_blob(self, commit, path):
+                  tree = self.request(f'/repos/{REPOSITORY}/git/commits/{commit}')['tree']['sha']
+                  parts = path.split('/')
+                  for i, part in enumerate(parts):
+                      data = self.request(f'/repos/{REPOSITORY}/git/trees/{tree}')
+                      require(not data.get('truncated'), 'truncated tree')
+                      entries = [x for x in data['tree'] if x['path'] == part]
+                      if not entries:
+                          return None
+                      require(len(entries) == 1, 'duplicate tree entry')
+                      entry = entries[0]
+                      if i < len(parts) - 1:
+                          require(entry['type'] == 'tree' and entry['mode'] == '040000', 'non-tree ancestor')
+                          tree = entry['sha']
+                      else:
+                          require(entry['type'] == 'blob' and entry['mode'] == '100644', 'unsupported file mode')
+                          data = self.request(f'/repos/{REPOSITORY}/git/blobs/{entry["sha"]}')
+                          require(data['encoding'] == 'base64', 'unsupported blob encoding')
+                          blob = {'mode': entry['mode'], 'blob': entry['sha'], 'base64': ''.join(data['content'].splitlines())}
+                          blob_bytes(blob)
+                          return blob
+          
+              def list_small(self, path):
+                  data = self.request(path + '?per_page=100')
+                  require(isinstance(data, list) and len(data) < 100, 'unbounded pagination; test-only stage exceeds limit')
+                  return data
+          
+          
+          def live():
+              api = API()
+              event_name = os.environ['GITHUB_EVENT_NAME']
+              with open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8') as event_file:
+                  event = json.load(event_file)
+              require(os.environ['GITHUB_REPOSITORY'] == REPOSITORY and event['repository']['full_name'] == REPOSITORY, 'wrong execution repository')
+              require(event_name == 'push', 'only native push checks supported')
+              head = os.environ['GITHUB_SHA']
+              require(SHA.fullmatch(head) and event['after'] == head and not event.get('deleted'), 'invalid push')
+              branch = event['ref'].removeprefix('refs/heads/')
+              require(branch == 'csm-ci/repo-settings' or re.fullmatch(r'e2e-issue67-(?:status-check-bootstrap-[a-f0-9]{12}|funding-restore-[a-f0-9]{12})', branch), 'unrecognized branch')
+              commit = api.request(f'/repos/{REPOSITORY}/commits/{head}')
+              require(len(commit['parents']) == 1, 'unexpected proposed parents')
+              base = commit['parents'][0]['sha']
+              require(SHA.fullmatch(base), 'bad parent SHA')
+              compare = api.request(f'/repos/{REPOSITORY}/compare/{base}...{head}')
+              require(compare['total_commits'] == 1 and len(compare['files']) < 100, 'incomplete proposed compare')
+              require(api.request(f'/repos/{REPOSITORY}/git/ref/heads/main')['object']['sha'] == base, 'default moved before validation')
+              require(api.request(f'/repos/{REPOSITORY}/git/ref/heads/{branch}')['object']['sha'] == head, 'branch moved before validation')
+              blobs = lambda revision: {path: api.read_blob(revision, path) for path in (WORKFLOW, MANIFEST, FUNDING)}
+              context = {'repository': REPOSITORY, 'event': event_name, 'head': head, 'base': base, 'branch': branch, 'author': event['sender']['id'], 'commits': [{'sha': head, 'parent': base, 'author': (commit.get('author') or {}).get('id'), 'verified': commit['commit']['verification']['verified'], 'reason': commit['commit']['verification']['reason']}], 'files': compare['files'], 'headBlobs': blobs(head), 'baseBlobs': blobs(base)}
+              result = validate(context)
+              require(api.request(f'/repos/{REPOSITORY}/git/ref/heads/main')['object']['sha'] == base, 'default moved during validation')
+              require(api.request(f'/repos/{REPOSITORY}/git/ref/heads/{branch}')['object']['sha'] == head, 'branch moved during validation')
+              run_url = f'https://github.com/{REPOSITORY}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+              print(json.dumps({'validated': result, 'head': head, 'base': base, 'run': run_url}))
+          
+          
+          if __name__ == '__main__':
+              try:
+                  live()
+              except Exception as error:
+                  print('Issue #67 validator failed: ' + (str(error) if isinstance(error, ValueError) else type(error).__name__), file=sys.stderr)
+                  sys.exit(1)
+          
+          VALIDATOR_PY
