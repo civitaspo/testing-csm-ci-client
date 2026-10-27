@@ -1,5 +1,5 @@
 name: release_fixture
-version: 1.0.0 # package version
+version: 1.0.1793042727504 # package version
 config-version: 2
 vars:
   version: 9.0.0
