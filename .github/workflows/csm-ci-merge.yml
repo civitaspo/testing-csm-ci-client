@@ -7,7 +7,6 @@ on:
 permissions: {}
 jobs:
   merge:
-    # jactionlint ignore=unpinned-uses
+    # jactionlint ignore=unpinned-uses,secrets-inherit
     uses: civitaspo/csm-ci-actions/.github/workflows/client-merge.yml@e2e
-    secrets:
-      CSM_CI_CLIENT_APP_PRIVATE_KEY: ${{ secrets.CSM_CI_CLIENT_APP_PRIVATE_KEY }}
+    secrets: inherit
