@@ -1,0 +1,34 @@
+name: Issue 68 workflows
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  workflows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bounded deterministic check
+        env:
+          ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          scenario=$(cat .issue68-scenario)
+          case "$scenario" in
+            success) ;;
+            failures)
+              if [ "workflows" = english ] && [ "$ATTEMPT" -lt 2 ]; then exit 1; fi
+              if [ "workflows" = runtime ] && [ "$ATTEMPT" -lt 3 ]; then exit 1; fi
+              ;;
+            cancel)
+              if [ "workflows" = english ]; then sleep 480; fi
+              ;;
+            *) exit 2 ;;
+          esac
