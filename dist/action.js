@@ -1,3 +1,1 @@
-export function releaseFixture() {
-  return "testing csm-ci release";
-}
+stale e2e dist output
