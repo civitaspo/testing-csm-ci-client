@@ -1,5 +1,5 @@
 id = "release-fixture"
-version = "0.1.0" # root
+version = "1.1.1794193885409" # root
 platforms = ["macos", "linux"]
 
 [[actions]]
