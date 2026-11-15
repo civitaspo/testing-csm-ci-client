@@ -1,1 +1,1 @@
-drift introduced after the managed reservation was accepted
+managed by csm-ci e2e
